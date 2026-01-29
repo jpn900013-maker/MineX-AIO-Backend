@@ -1,0 +1,22 @@
+{
+    "name": "minex-aio-server",
+    "version": "1.0.0",
+    "description": "Backend server for MineX AIO Hub - MC Bot, IP Logger, Auth",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js",
+        "dev": "nodemon index.js"
+    },
+    "dependencies": {
+        "bcryptjs": "^3.0.3",
+        "cors": "^2.8.5",
+        "express": "^4.18.2",
+        "jsonwebtoken": "^9.0.3",
+        "mineflayer": "^4.14.0",
+        "mongoose": "^9.1.5",
+        "socket.io": "^4.7.2"
+    },
+    "devDependencies": {
+        "nodemon": "^3.0.0"
+    }
+}
