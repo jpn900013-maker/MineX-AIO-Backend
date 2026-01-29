@@ -1029,6 +1029,19 @@ app.get('/raw/:code', async (req, res) => {
     res.send(paste.content);
 });
 
+// Proxy for IP Lookup (Avoid Mixed Content)
+app.get('/api/tools/ip-lookup/:ip?', async (req, res) => {
+    const { ip } = req.params;
+    const target = ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    try {
+        const response = await fetch(`http://ip-api.com/json/${target}`);
+        const data = await response.json();
+        res.json(data);
+    } catch (e) {
+        res.status(500).json({ status: 'fail', message: 'Server proxy failed' });
+    }
+});
+
 // Socket.io
 io.on('connection', (socket) => {
     socket.on('join:session', (id) => socket.join(id));
