@@ -6,7 +6,7 @@ const cors = require('cors');
 const mineflayer = require('mineflayer');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { DatabaseManager, User, Paste, IpLog, Account, GeneratedLink } = require('./database');
+const { DatabaseManager, User, Paste, IpLog, Account, GeneratedLink, Bot } = require('./database');
 
 const app = express();
 const server = http.createServer(app);
