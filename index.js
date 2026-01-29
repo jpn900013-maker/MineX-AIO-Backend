@@ -1023,6 +1023,27 @@ app.get('/raw/:code', async (req, res) => {
 // Socket.io
 io.on('connection', (socket) => {
     socket.on('join:session', (id) => socket.join(id));
+
+    socket.on('bot:control', ({ sessionId, action }) => {
+        const bot = activeBots.get(sessionId);
+        if (bot) {
+            console.log(`[${sessionId}] Control: ${action}`);
+            if (['jump', 'sprint', 'sneak', 'forward', 'back', 'left', 'right'].includes(action)) {
+                bot.setControlState(action, true);
+                setTimeout(() => bot.setControlState(action, false), 300); // Pulse control
+            } else if (action === 'stop') {
+                bot.clearControlStates();
+            } else if (action === 'drop') {
+                const heldItem = bot.inventory.slots[bot.getEquipmentDestSlot('hand')];
+                if (heldItem) bot.tossStack(heldItem);
+            }
+        }
+    });
+
+    socket.on('bot:chat', ({ sessionId, message }) => {
+        const bot = activeBots.get(sessionId);
+        if (bot) bot.chat(message);
+    });
 });
 
 // Start
