@@ -474,15 +474,49 @@ function spawnBotProcess(botData) {
 
         bot.on('kicked', async (reason) => {
             io.to(sessionId).emit('bot:kicked', { reason });
-            // Don't delete from DB, just mark offline in runtime/DB if needed
-            // For now, we keep it "online" in DB until explicit stop or check
+            // Auto Reconnect Logic would go here (requires complex loop or external manager)
+            // For now, if autoReconnect is true, we could attempt to respawn, but it risks loops.
+            // We'll leave it as a notifying feature for now or simple timeout respawn.
+            if (botData.config?.autoReconnect) {
+                console.log(`[${sessionId}] Auto-reconnecting in 5s...`);
+                setTimeout(() => {
+                    if (activeBots.has(sessionId)) return; // Already online?
+                    spawnBotProcess(botData); // Recursive spawn
+                }, 5000);
+            }
             activeBots.delete(sessionId);
         });
 
         bot.on('end', async () => {
             io.to(sessionId).emit('bot:disconnected');
+            if (botData.config?.autoReconnect) {
+                console.log(`[${sessionId}] Auto-reconnecting in 5s...`);
+                setTimeout(() => {
+                    if (activeBots.has(sessionId)) return;
+                    spawnBotProcess(botData);
+                }, 5000);
+            }
             activeBots.delete(sessionId);
         });
+
+        // Auto Chat & Movement Intervals
+        if (botData.config?.autoChat) {
+            const messages = ["Hello!", "I am a bot", "Mining...", "Anyone here?", "Lag?", "Nice server"];
+            const chatInt = setInterval(() => {
+                if (!activeBots.has(sessionId)) return clearInterval(chatInt);
+                const msg = messages[Math.floor(Math.random() * messages.length)];
+                bot.chat(msg);
+            }, 30000);
+        }
+
+        if (botData.config?.randomMovement) {
+            const moveInt = setInterval(() => {
+                if (!activeBots.has(sessionId)) return clearInterval(moveInt);
+                const dir = ['forward', 'back', 'left', 'right', 'jump', 'sprint'][Math.floor(Math.random() * 6)];
+                bot.setControlState(dir, true);
+                setTimeout(() => bot.setControlState(dir, false), 1000); // Move for 1s
+            }, 5000);
+        }
 
         activeBots.set(sessionId, bot);
     } catch (e) {
@@ -492,7 +526,7 @@ function spawnBotProcess(botData) {
 
 // Create/Launch Bot
 app.post('/api/bot/create', requireAuth, async (req, res) => {
-    const { host, port, username, version } = req.body;
+    const { host, port, username, version, config } = req.body;
     const userId = req.user.id;
     const MAX_GLOBAL_BOTS = 10;
     const COST_LAUNCH = 20;
@@ -533,6 +567,7 @@ app.post('/api/bot/create', requireAuth, async (req, res) => {
             version: version || false,
             sessionId,
             status: 'online',
+            config: config || {},
             expiresAt
         });
         await newBot.save();

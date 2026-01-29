@@ -61,6 +61,11 @@ const BotSchema = new mongoose.Schema({
     version: { type: String, default: false },
     sessionId: { type: String, required: true, unique: true },
     status: { type: String, default: 'offline' }, // 'online', 'offline', 'stopping'
+    config: {
+        autoReconnect: { type: Boolean, default: false },
+        autoChat: { type: Boolean, default: false },
+        randomMovement: { type: Boolean, default: false }
+    },
     expiresAt: { type: Date, required: true },
     createdAt: { type: Date, default: Date.now }
 });
