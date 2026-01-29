@@ -53,6 +53,18 @@ const GeneratedLinkSchema = new mongoose.Schema({
     createdAt: Number
 });
 
+const BotSchema = new mongoose.Schema({
+    userId: { type: String, required: true },
+    username: { type: String, required: true },
+    host: { type: String, required: true },
+    port: { type: Number, default: 25565 },
+    version: { type: String, default: false },
+    sessionId: { type: String, required: true, unique: true },
+    status: { type: String, default: 'offline' }, // 'online', 'offline', 'stopping'
+    expiresAt: { type: Date, required: true },
+    createdAt: { type: Date, default: Date.now }
+});
+
 // Models
 const User = mongoose.model('User', UserSchema);
 const Paste = mongoose.model('Paste', PasteSchema);
@@ -60,17 +72,13 @@ const IpLog = mongoose.model('IpLog', IpLogSchema);
 const Account = mongoose.model('Account', AccountSchema);
 const ToolAccessCode = mongoose.model('ToolAccessCode', ToolAccessCodeSchema);
 const GeneratedLink = mongoose.model('GeneratedLink', GeneratedLinkSchema);
+const Bot = mongoose.model('Bot', BotSchema);
 
 class DatabaseManager {
-    constructor(inMemoryUsers, inMemoryPastes, inMemoryIpLogs) {
-        this.status = 'memory'; // 'memory' or 'mongodb'
+    constructor() {
+        this.status = 'disconnected'; // 'disconnected' or 'mongodb'
         this.activeAlias = null;
         this.databases = new Map(); // alias -> connectionString
-
-        // In-memory data references
-        this.memUsers = inMemoryUsers;
-        this.memPastes = inMemoryPastes;
-        this.memIpLogs = inMemoryIpLogs;
     }
 
     addDatabase(alias, connectionString) {
@@ -89,7 +97,7 @@ class DatabaseManager {
             console.log('✅ Connected to MongoDB');
         } else {
             console.error('❌ Failed to connect to MongoDB:', result.error);
-            console.log('Falling back to in-memory storage');
+            console.error('CRITICAL: MongoDB connection required. Server format: MongoDB-only.');
         }
         return result;
     }
@@ -127,7 +135,7 @@ class DatabaseManager {
     async disconnect() {
         if (this.status === 'mongodb') {
             await mongoose.disconnect();
-            this.status = 'memory';
+            this.status = 'disconnected';
             this.activeAlias = null;
             return { success: true };
         }
@@ -265,4 +273,4 @@ class DatabaseManager {
 // End of Class
 
 
-module.exports = { DatabaseManager, User, Paste, IpLog, Account, ToolAccessCode, GeneratedLink };
+module.exports = { DatabaseManager, User, Paste, IpLog, Account, ToolAccessCode, GeneratedLink, Bot };

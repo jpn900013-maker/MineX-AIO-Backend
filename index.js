@@ -77,33 +77,25 @@ app.get('/', (req, res) => {
 
 const JWT_SECRET = process.env.JWT_SECRET || 'minex-secret-key-change-this';
 
-// In-Memory Data Stores
-const memUsers = new Map();
-const memPastes = new Map();
-const memIpLogs = new Map();
-const activeBots = new Map();
+// In-Memory Runtime Data
+const activeBots = new Map(); // Runtime only, not persisted
 
 // Initialize Database Manager
-const dbManager = new DatabaseManager(memUsers, memPastes, memIpLogs);
+const dbManager = new DatabaseManager();
 
 // --- HELPER FUNCTIONS (Unified Data Access) ---
 
 async function findUser(username) {
-    if (dbManager.status === 'mongodb') {
-        const user = await User.findOne({ username });
-        return user ? user.toObject() : null;
-    }
-    return memUsers.get(username);
+    if (dbManager.status !== 'mongodb') return null;
+    const user = await User.findOne({ username });
+    return user ? user.toObject() : null;
 }
 
 async function createUser(userData) {
-    if (dbManager.status === 'mongodb') {
-        const user = new User(userData);
-        await user.save();
-        return user.toObject();
-    }
-    memUsers.set(userData.username, userData);
-    return userData;
+    if (dbManager.status !== 'mongodb') throw new Error('Database not connected');
+    const user = new User(userData);
+    await user.save();
+    return user.toObject();
 }
 
 // Middleware
@@ -152,23 +144,43 @@ const requireAdmin = (req, res, next) => {
     });
 };
 
+app.get('/api/stats', async (req, res) => {
+    try {
+        const users = await User.countDocuments();
+        const activeBotsCount = Array.from(global.activeBots?.keys() || []).length;
+        res.json({
+            success: true,
+            stats: {
+                users,
+                onlineBots: activeBotsCount,
+                dbStatus: dbManager.status
+            }
+        });
+    } catch (e) {
+        res.status(500).json({ success: false });
+    }
+});
+
 app.get('/api/admin/stats', requireAdmin, async (req, res) => {
     let stats = {
-        users: memUsers.size,
-        pastes: memPastes.size,
-        links: memIpLogs.size,
+        users: 0,
+        pastes: 0,
+        links: 0,
         bots: activeBots.size,
         dbStatus: dbManager.status
     };
 
-    if (dbManager.status === 'mongodb') {
-        try {
-            stats.users = await User.countDocuments();
-            stats.pastes = await Paste.countDocuments();
-            stats.links = await IpLog.countDocuments();
-        } catch (e) {
-            console.error(e);
-        }
+    if (dbManager.status !== 'mongodb') {
+        return res.json({ success: false, error: 'Database not connected' });
+    }
+
+    try {
+        stats.users = await User.countDocuments();
+        stats.pastes = await Paste.countDocuments();
+        stats.links = await IpLog.countDocuments();
+    } catch (e) {
+        console.error(e);
+        return res.status(500).json({ success: false, error: 'Stats failed' });
     }
     res.json({ success: true, stats });
 });
@@ -232,19 +244,12 @@ app.get('/api/admin/users/search', requireAdmin, async (req, res) => {
 
     try {
         let users = [];
-        if (dbManager.status === 'mongodb') {
-            users = await User.find({ username: { $regex: q, $options: 'i' } })
-                .select('id username credits')
-                .limit(20);
-        } else {
-            const regex = new RegExp(q, 'i');
-            for (const user of memUsers.values()) {
-                if (regex.test(user.username)) {
-                    users.push({ id: user.id || 'mem', username: user.username, credits: user.credits || 0 });
-                    if (users.length >= 20) break;
-                }
-            }
+        if (dbManager.status !== 'mongodb') {
+            return res.json({ success: false, error: 'Database not connected' });
         }
+        users = await User.find({ username: { $regex: q, $options: 'i' } })
+            .select('id username credits')
+            .limit(20);
         res.json({ success: true, users });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Search failed' });
@@ -258,21 +263,17 @@ app.post('/api/admin/users/add-credits', requireAdmin, async (req, res) => {
 
     try {
         let newCredits = 0;
-        if (dbManager.status === 'mongodb') {
-            const user = await User.findOneAndUpdate(
-                { username },
-                { $inc: { credits: parseInt(amount) } },
-                { new: true }
-            );
-            if (!user) return res.json({ success: false, error: 'User not found' });
-            newCredits = user.credits;
-        } else {
-            const user = memUsers.get(username);
-            if (!user) return res.json({ success: false, error: 'User not found' });
-            user.credits = (user.credits || 0) + parseInt(amount);
-            memUsers.set(username, user);
-            newCredits = user.credits;
+        if (dbManager.status !== 'mongodb') {
+            return res.json({ success: false, error: 'Database not connected' });
         }
+
+        const user = await User.findOneAndUpdate(
+            { username },
+            { $inc: { credits: parseInt(amount) } },
+            { new: true }
+        );
+        if (!user) return res.json({ success: false, error: 'User not found' });
+        newCredits = user.credits;
         res.json({ success: true, credits: newCredits, message: `Added ${amount} credits to ${username}` });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed to add credits' });
@@ -327,22 +328,14 @@ app.get('/api/user/history', requireAuth, async (req, res) => {
         userPastes = await Paste.find({ userId });
         userLinks = await IpLog.find({ userId });
     } else {
-        for (const [code, paste] of memPastes.entries()) {
-            if (paste.userId === userId) userPastes.push({ ...paste, code });
-        }
-        for (const [code, link] of memIpLogs.entries()) {
-            if (link.userId === userId) userLinks.push({ ...link, code });
-        }
+        return res.json({ success: false, error: 'Database not connected' });
     }
     res.json({ success: true, pastes: userPastes, links: userLinks });
 });
 
 // ============= CREDITS SYSTEM =============
 
-// In-memory credits storage (per user)
-// In-memory credits storage (per user)
-// const userCredits = new Map(); // Deprecated: Now stored in User model
-// const dailyClaims = new Map(); // Deprecated: Now stored in User model
+// In-memory credits storage (Removed - using MongoDB)
 
 // Get user credits
 app.get('/api/user/credits', requireAuth, async (req, res) => {
@@ -361,21 +354,17 @@ app.post('/api/user/credits/add', requireAuth, async (req, res) => {
 
     try {
         let credits = 0;
-        if (dbManager.status === 'mongodb') {
-            const user = await User.findOneAndUpdate(
-                { username: req.user.username },
-                { $inc: { credits: amount } },
-                { new: true }
-            );
-            credits = user.credits;
-        } else {
-            const user = memUsers.get(req.user.username);
-            if (user) {
-                user.credits = (user.credits || 0) + amount;
-                memUsers.set(req.user.username, user);
-                credits = user.credits;
-            }
+        if (dbManager.status !== 'mongodb') {
+            return res.json({ success: false, error: 'Database not connected' });
         }
+
+        const user = await User.findOneAndUpdate(
+            { username: req.user.username },
+            { $inc: { credits: amount } },
+            { new: true }
+        );
+        if (!user) return res.json({ success: false, error: 'User not found' });
+        credits = user.credits;
         res.json({ success: true, credits, added: amount, source });
     } catch (e) {
         res.status(500).json({ success: false, error: 'Failed to update credits' });
@@ -384,52 +373,60 @@ app.post('/api/user/credits/add', requireAuth, async (req, res) => {
 
 // Daily bonus claim
 app.post('/api/user/credits/daily', requireAuth, async (req, res) => {
-    const userId = req.user.id;
     const today = new Date().toDateString();
 
     try {
-        // Preferred: Check DB logic
-        if (dbManager.status === 'mongodb') {
-            const user = await findUser(req.user.username);
-
-            if (user && user.lastDailyClaim === today) {
-                return res.json({ success: false, error: 'Daily bonus already claimed today' });
-            }
-
-            const DAILY_BONUS = 10;
-            const updatedUser = await User.findOneAndUpdate(
-                { username: req.user.username },
-                {
-                    $inc: { credits: DAILY_BONUS },
-                    $set: { lastDailyClaim: today }
-                },
-                { new: true }
-            );
-            return res.json({ success: true, credits: updatedUser.credits, added: DAILY_BONUS });
+        if (dbManager.status !== 'mongodb') {
+            return res.json({ success: false, error: 'Database not connected' });
         }
 
-        // Fallback: In-Memory
-        const user = memUsers.get(req.user.username);
-        // Fallback to checking map if user obj doesn't have it
-        const lastClaim = user.lastDailyClaim || dailyClaims.get(userId);
+        const user = await findUser(req.user.username);
 
-        if (lastClaim === today) {
+        if (user && user.lastDailyClaim === today) {
             return res.json({ success: false, error: 'Daily bonus already claimed today' });
         }
 
         const DAILY_BONUS = 10;
-        user.credits = (user.credits || 0) + DAILY_BONUS;
-        user.lastDailyClaim = today;
-        memUsers.set(req.user.username, user);
-
-        // Keep map synced for safety until removal
-        dailyClaims.set(userId, today);
-
-        res.json({ success: true, credits: user.credits, added: DAILY_BONUS });
+        const updatedUser = await User.findOneAndUpdate(
+            { username: req.user.username },
+            {
+                $inc: { credits: DAILY_BONUS },
+                $set: { lastDailyClaim: today }
+            },
+            { new: true }
+        );
+        return res.json({ success: true, credits: updatedUser.credits, added: DAILY_BONUS });
 
     } catch (e) {
         console.error(e);
         res.status(500).json({ success: false, error: 'Failed to claim bonus' });
+    }
+});
+
+// ============= ADMIN ROUTES (Moderation) =============
+
+// Reset User Password
+app.post('/api/admin/user/:id/reset-password', requireAdmin, async (req, res) => {
+    try {
+        const { newPassword } = req.body;
+        if (!newPassword) return res.json({ success: false, error: 'New password required' });
+
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await User.findByIdAndUpdate(req.params.id, { password: hashedPassword });
+
+        res.json({ success: true, message: 'Password reset successfully' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Delete User
+app.delete('/api/admin/user/:id/delete', requireAdmin, async (req, res) => {
+    try {
+        await User.findByIdAndDelete(req.params.id);
+        res.json({ success: true, message: 'User deleted successfully' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
     }
 });
 
@@ -440,24 +437,26 @@ app.get('/api/user/generation-history', requireAuth, async (req, res) => {
     res.json({ success: true, history: [] });
 });
 
-// ============= MC BOT ROUTES =============
+// ============= MC BOT ROUTES (Persistent) =============
 
-app.post('/api/bot/create', (req, res) => {
-    const { sessionId, host, port, username, version } = req.body;
+// Helper: Spawn Bot Process
+function spawnBotProcess(botData) {
+    const { sessionId, host, port, username, version } = botData;
 
-    if (activeBots.has(sessionId)) return res.json({ success: false, error: 'Bot exists' });
+    // Prevent duplicates
+    if (activeBots.has(sessionId)) return;
 
     try {
         const bot = mineflayer.createBot({
             host: host,
             port: port || 25565,
-            username: username || 'MineXBot',
+            username: username,
             version: version || false,
             auth: 'offline',
             viewDistance: 'tiny',
             hideErrors: false,
-            checkTimeoutInterval: 120000, // 2 mins timeout
-            skipValidation: true // Skip some validation checks
+            checkTimeoutInterval: 120000,
+            skipValidation: true
         });
 
         bot.on('spawn', () => {
@@ -473,27 +472,190 @@ app.post('/api/bot/create', (req, res) => {
             console.error(`Bot Error [${sessionId}]:`, errorMsg);
         });
 
-        bot.on('kicked', (reason) => {
+        bot.on('kicked', async (reason) => {
             io.to(sessionId).emit('bot:kicked', { reason });
+            // Don't delete from DB, just mark offline in runtime/DB if needed
+            // For now, we keep it "online" in DB until explicit stop or check
             activeBots.delete(sessionId);
         });
 
-        bot.on('end', () => {
+        bot.on('end', async () => {
             io.to(sessionId).emit('bot:disconnected');
             activeBots.delete(sessionId);
         });
 
         activeBots.set(sessionId, bot);
-        res.json({ success: true, message: 'Bot created' });
-    } catch (error) {
-        res.json({ success: false, error: error.message });
+    } catch (e) {
+        console.error('Spawn Error:', e);
+    }
+}
+
+// Create/Launch Bot
+app.post('/api/bot/create', requireAuth, async (req, res) => {
+    const { host, port, username, version } = req.body;
+    const userId = req.user.id;
+    const MAX_GLOBAL_BOTS = 10;
+    const COST_LAUNCH = 20;
+
+    if (dbManager.status !== 'mongodb') return res.status(503).json({ error: 'Database required' });
+
+    try {
+        // 1. Check Global Limit
+        const globalCount = await Bot.countDocuments({ status: 'online' });
+        if (globalCount >= MAX_GLOBAL_BOTS) {
+            return res.json({ success: false, error: 'Server capacity full (Max 10 bots). Please try again later.' });
+        }
+
+        // 2. Check User Limit (1 active bot)
+        const existingBot = await Bot.findOne({ userId });
+        if (existingBot) {
+            return res.json({ success: false, error: 'You already own a bot. Please manage it in the dashboard.', botId: existingBot._id });
+        }
+
+        // 3. Deduct Credits
+        const user = await User.findOne({ username: req.user.username });
+        if ((user.credits || 0) < COST_LAUNCH) {
+            return res.json({ success: false, error: `Insufficient credits. Launch costs ${COST_LAUNCH}.` });
+        }
+        user.credits -= COST_LAUNCH;
+        await user.save();
+
+        // 4. Create Bot Entry
+        const sessionId = Math.random().toString(36).substring(7);
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + 7); // 7 Days validity
+
+        const newBot = new Bot({
+            userId,
+            username: username || 'MineXBot',
+            host,
+            port: port || 25565,
+            version: version || false,
+            sessionId,
+            status: 'online',
+            expiresAt
+        });
+        await newBot.save();
+
+        // 5. Spawn Process (Runtime)
+        spawnBotProcess(newBot);
+
+        res.json({ success: true, message: 'Bot launched successfully', sessionId, expiresAt, credits: user.credits });
+
+    } catch (e) {
+        console.error('Bot Launch Error:', e);
+        res.status(500).json({ success: false, error: e.message });
     }
 });
 
+// Stop Bot
+app.post('/api/bot/stop', requireAuth, async (req, res) => {
+    const userId = req.user.id;
+    try {
+        const botRecord = await Bot.findOne({ userId });
+        if (!botRecord) return res.json({ success: false, error: 'No bot found' });
+
+        const runtimeBot = activeBots.get(botRecord.sessionId);
+        if (runtimeBot) {
+            runtimeBot.quit();
+            activeBots.delete(botRecord.sessionId);
+        }
+
+        botRecord.status = 'offline';
+        await botRecord.save();
+        res.json({ success: true, message: 'Bot stopped' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Start Existing Bot
+app.post('/api/bot/start', requireAuth, async (req, res) => {
+    const userId = req.user.id;
+    const MAX_GLOBAL_BOTS = 10;
+
+    try {
+        const botRecord = await Bot.findOne({ userId });
+        if (!botRecord) return res.json({ success: false, error: 'No bot found' });
+
+        if (new Date() > botRecord.expiresAt) {
+            return res.json({ success: false, error: 'Bot expired. Please renew.' });
+        }
+
+        const globalCount = await Bot.countDocuments({ status: 'online' });
+        if (globalCount >= MAX_GLOBAL_BOTS) {
+            return res.json({ success: false, error: 'Server capacity full.' });
+        }
+
+        if (!activeBots.has(botRecord.sessionId)) {
+            spawnBotProcess(botRecord);
+        }
+
+        botRecord.status = 'online';
+        await botRecord.save();
+
+        res.json({ success: true, message: 'Bot started' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Renew Bot
+app.post('/api/bot/renew', requireAuth, async (req, res) => {
+    const userId = req.user.id;
+    const COST_RENEW = 30;
+
+    try {
+        const botRecord = await Bot.findOne({ userId });
+        if (!botRecord) return res.json({ success: false, error: 'No bot found' });
+
+        const user = await User.findOne({ username: req.user.username });
+        if ((user.credits || 0) < COST_RENEW) {
+            return res.json({ success: false, error: `Insufficient credits. Renew costs ${COST_RENEW}.` });
+        }
+
+        user.credits -= COST_RENEW;
+        await user.save();
+
+        const currentExpiry = new Date(botRecord.expiresAt);
+        const now = new Date();
+        const baseDate = currentExpiry > now ? currentExpiry : now;
+        baseDate.setDate(baseDate.getDate() + 7);
+
+        botRecord.expiresAt = baseDate;
+        await botRecord.save();
+
+        res.json({ success: true, message: 'Bot renewed', expiresAt: botRecord.expiresAt, credits: user.credits });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Get My Bot Status
+app.get('/api/bot/my-bot', requireAuth, async (req, res) => {
+    try {
+        const botRecord = await Bot.findOne({ userId: req.user.id });
+        if (!botRecord) return res.json({ success: true, hasBot: false });
+
+        const runtimeBot = activeBots.get(botRecord.sessionId);
+        const isOnline = !!runtimeBot;
+
+        if (!isOnline && botRecord.status === 'online') {
+            botRecord.status = 'offline';
+            await botRecord.save();
+        }
+
+        res.json({ success: true, hasBot: true, bot: botRecord });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Legacy Chat/Action Support (checking activeBots)
 app.post('/api/bot/chat', (req, res) => {
     const { sessionId, message } = req.body;
     const bot = activeBots.get(sessionId);
-    if (!bot) return res.json({ success: false, error: 'Bot not found' });
+    if (!bot) return res.json({ success: false, error: 'Bot is offline' });
     bot.chat(message);
     res.json({ success: true });
 });
@@ -501,8 +663,7 @@ app.post('/api/bot/chat', (req, res) => {
 app.post('/api/bot/action', (req, res) => {
     const { sessionId, action } = req.body;
     const bot = activeBots.get(sessionId);
-    if (!bot) return res.json({ success: false, error: 'Bot not found' });
-
+    if (!bot) return res.json({ success: false, error: 'Bot is offline' });
     try {
         switch (action) {
             case 'jump': bot.setControlState('jump', true); setTimeout(() => bot.setControlState('jump', false), 500); break;
@@ -517,16 +678,6 @@ app.post('/api/bot/action', (req, res) => {
     } catch (error) {
         res.json({ success: false, error: error.message });
     }
-});
-
-app.post('/api/bot/disconnect', (req, res) => {
-    const { sessionId } = req.body;
-    const bot = activeBots.get(sessionId);
-    if (bot) {
-        bot.quit();
-        activeBots.delete(sessionId);
-        res.json({ success: true });
-    } else res.json({ success: false, error: 'Bot not found' });
 });
 
 app.get('/api/bot/status/:sessionId', (req, res) => {
@@ -549,14 +700,12 @@ app.post('/api/iplogger/create', authenticateToken, async (req, res) => {
         visitors: []
     };
 
-    if (dbManager.status === 'mongodb') {
-        const log = new IpLog(logData);
-        await log.save();
-        // Optional: Implement limit logic for Mongo if desired
-    } else {
-        memIpLogs.set(code, logData);
-        if (memIpLogs.size > 3) memIpLogs.delete(memIpLogs.keys().next().value);
+    if (dbManager.status !== 'mongodb') {
+        return res.json({ success: false, error: 'Database not connected' });
     }
+
+    const log = new IpLog(logData);
+    await log.save();
     res.json({ success: true, code, url: `/track/${code}` });
 });
 
@@ -567,7 +716,7 @@ app.get('/track/:code', async (req, res) => {
     if (dbManager.status === 'mongodb') {
         data = await IpLog.findOne({ code });
     } else {
-        data = memIpLogs.get(code);
+        return res.status(503).send('Database not connected');
     }
 
     if (!data) return res.status(404).send('Not found');
@@ -633,7 +782,7 @@ app.get('/api/iplogger/visitors/:code', async (req, res) => {
     if (dbManager.status === 'mongodb') {
         data = await IpLog.findOne({ code });
     } else {
-        data = memIpLogs.get(code);
+        return res.json({ success: false, error: 'Database not connected' });
     }
 
     if (!data) return res.json({ success: false, error: 'Not found' });
@@ -784,11 +933,10 @@ app.post('/api/paste/create', authenticateToken, async (req, res) => {
         views: 0
     };
 
-    if (dbManager.status === 'mongodb') {
-        await new Paste(pasteData).save();
-    } else {
-        memPastes.set(code, pasteData);
+    if (dbManager.status !== 'mongodb') {
+        return res.json({ success: false, error: 'Database not connected' });
     }
+    await new Paste(pasteData).save();
 
     res.json({ success: true, code, url: `/paste/${code}`, hasPassword: !!password });
 });
