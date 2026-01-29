@@ -147,7 +147,7 @@ const requireAdmin = (req, res, next) => {
 app.get('/api/stats', async (req, res) => {
     try {
         const users = await User.countDocuments();
-        const activeBotsCount = Array.from(global.activeBots?.keys() || []).length;
+        const activeBotsCount = activeBots.size;
         res.json({
             success: true,
             stats: {
