@@ -8,6 +8,42 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { DatabaseManager, User, Paste, IpLog, Account, GeneratedLink, Bot } = require('./database');
 
+// Helper: Equip Best Tool
+const equipBestTool = async (bot, category) => {
+    if (!bot || !bot.inventory) return false;
+    const items = bot.inventory.items();
+    let bestItem = null;
+
+    if (category === 'weapon') {
+        const weapons = items.filter(i => i.name.includes('sword') || i.name.includes('axe'));
+        // Sort by damage (rough approximation: netherite > diamond > iron > stone > wood > gold)
+        const materials = ['netherite', 'diamond', 'iron', 'stone', 'wood', 'gold'];
+        weapons.sort((a, b) => {
+            const aMat = materials.findIndex(m => a.name.includes(m));
+            const bMat = materials.findIndex(m => b.name.includes(m));
+            return (aMat === -1 ? 99 : aMat) - (bMat === -1 ? 99 : bMat);
+        });
+        bestItem = weapons[0];
+    } else if (category === 'mining') {
+        const picks = items.filter(i => i.name.includes('pickaxe'));
+        const materials = ['netherite', 'diamond', 'iron', 'stone', 'wood', 'gold'];
+        picks.sort((a, b) => {
+            const aMat = materials.findIndex(m => a.name.includes(m));
+            const bMat = materials.findIndex(m => b.name.includes(m));
+            return (aMat === -1 ? 99 : aMat) - (bMat === -1 ? 99 : bMat);
+        });
+        bestItem = picks[0];
+    }
+
+    if (bestItem) {
+        try {
+            await bot.equip(bestItem, 'hand');
+            return true;
+        } catch (e) { return false; }
+    }
+    return false;
+};
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -927,44 +963,6 @@ app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
 
         if (enabled) {
             // Enable the mode
-            switch (mode) {
-// Helper: Equip Best Tool
-const equipBestTool = async (bot, category) => {
-                if (!bot || !bot.inventory) return false;
-                const items = bot.inventory.items();
-                let bestItem = null;
-
-                if (category === 'weapon') {
-                    const weapons = items.filter(i => i.name.includes('sword') || i.name.includes('axe'));
-                    // Sort by damage (rough approximation: netherite > diamond > iron > stone > wood > gold)
-                    const materials = ['netherite', 'diamond', 'iron', 'stone', 'wood', 'gold'];
-                    weapons.sort((a, b) => {
-                        const aMat = materials.findIndex(m => a.name.includes(m));
-                        const bMat = materials.findIndex(m => b.name.includes(m));
-                        return (aMat === -1 ? 99 : aMat) - (bMat === -1 ? 99 : bMat);
-                    });
-                    bestItem = weapons[0];
-                } else if (category === 'mining') {
-                    const picks = items.filter(i => i.name.includes('pickaxe'));
-                    const materials = ['netherite', 'diamond', 'iron', 'stone', 'wood', 'gold'];
-                    picks.sort((a, b) => {
-                        const aMat = materials.findIndex(m => a.name.includes(m));
-                        const bMat = materials.findIndex(m => b.name.includes(m));
-                        return (aMat === -1 ? 99 : aMat) - (bMat === -1 ? 99 : bMat);
-                    });
-                    bestItem = picks[0];
-                }
-
-                if (bestItem) {
-                    try {
-                        await bot.equip(bestItem, 'hand');
-                        return true;
-                    } catch (e) { return false; }
-                }
-                return false;
-            };
-
-            // ... inside switch(mode) ...
             switch (mode) {
                 case 'attack':
                     if (runtimeBot._attackInterval) clearInterval(runtimeBot._attackInterval);
