@@ -753,6 +753,207 @@ app.get('/api/bot/status/:sessionId', (req, res) => {
     } else res.json({ online: false });
 });
 
+// ============= PREMIUM BOT MODES =============
+
+const PREMIUM_MODES = ['attack', 'mining', 'butcher', 'follow', 'skin'];
+const MODE_COSTS = {
+    'attack': 100,
+    'mining': 100,
+    'butcher': 100,
+    'follow': 200,
+    'skin': 50
+};
+
+// Get user's unlocked modes
+app.get('/api/bot/modes', requireAuth, async (req, res) => {
+    try {
+        const user = await User.findOne({ username: req.user.username });
+        res.json({ success: true, unlockedModes: user?.unlockedModes || [] });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Unlock a premium mode
+app.post('/api/bot/modes/unlock', requireAuth, async (req, res) => {
+    const { mode } = req.body;
+    if (!PREMIUM_MODES.includes(mode)) {
+        return res.json({ success: false, error: 'Invalid mode' });
+    }
+
+    try {
+        const user = await User.findOne({ username: req.user.username });
+        if (!user) return res.json({ success: false, error: 'User not found' });
+
+        if (user.unlockedModes?.includes(mode)) {
+            return res.json({ success: false, error: 'Mode already unlocked' });
+        }
+
+        const cost = MODE_COSTS[mode] || 100;
+        if ((user.credits || 0) < cost) {
+            return res.json({ success: false, error: `Insufficient credits. Unlock costs ${cost} credits.` });
+        }
+
+        user.credits -= cost;
+        if (!user.unlockedModes) user.unlockedModes = [];
+        user.unlockedModes.push(mode);
+        await user.save();
+
+        res.json({ success: true, message: `${mode} mode unlocked!`, credits: user.credits, unlockedModes: user.unlockedModes });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Toggle a premium mode on/off
+app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
+    const { mode, enabled, options } = req.body; // options can contain targetPlayer or skinName
+    const userId = req.user.id;
+
+    if (!PREMIUM_MODES.includes(mode)) {
+        return res.json({ success: false, error: 'Invalid mode' });
+    }
+
+    try {
+        const user = await User.findOne({ username: req.user.username });
+        if (!user?.unlockedModes?.includes(mode)) {
+            return res.json({ success: false, error: 'Mode not unlocked. Unlock it first!' });
+        }
+
+        const botRecord = await Bot.findOne({ userId });
+        if (!botRecord) return res.json({ success: false, error: 'No bot found' });
+
+        const runtimeBot = activeBots.get(botRecord.sessionId);
+        if (!runtimeBot) return res.json({ success: false, error: 'Bot is offline. Start it first.' });
+
+        // Store active mode in the bot's internal state
+        if (!runtimeBot._premiumModes) runtimeBot._premiumModes = {};
+
+        if (enabled) {
+            // Enable the mode
+            switch (mode) {
+                case 'attack':
+                    if (runtimeBot._attackInterval) clearInterval(runtimeBot._attackInterval);
+                    runtimeBot._attackInterval = setInterval(() => {
+                        const nearestEntity = runtimeBot.nearestEntity(e => e.type === 'player' || e.type === 'hostile');
+                        if (nearestEntity && runtimeBot.entity.position.distanceTo(nearestEntity.position) < 4) {
+                            runtimeBot.attack(nearestEntity);
+                        }
+                    }, 500);
+                    runtimeBot._premiumModes.attack = true;
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '⚔️ Attack mode enabled', timestamp: Date.now() });
+                    break;
+
+                case 'mining':
+                    if (runtimeBot._miningInterval) clearInterval(runtimeBot._miningInterval);
+                    runtimeBot._miningInterval = setInterval(async () => {
+                        try {
+                            if (runtimeBot.entity.velocity.y > -0.1) { // Only if not falling
+                                const block = runtimeBot.findBlock({ matching: (b) => b.name.includes('ore') || b.name.includes('stone') || b.name.includes('log'), maxDistance: 4 });
+                                if (block) await runtimeBot.dig(block);
+                            }
+                        } catch (e) { }
+                    }, 1000);
+                    runtimeBot._premiumModes.mining = true;
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '⛏️ Mining mode enabled', timestamp: Date.now() });
+                    break;
+
+                case 'butcher':
+                    if (runtimeBot._butcherInterval) clearInterval(runtimeBot._butcherInterval);
+                    runtimeBot._butcherInterval = setInterval(() => {
+                        const animals = ['cow', 'pig', 'sheep', 'chicken', 'rabbit'];
+                        const nearestAnimal = runtimeBot.nearestEntity(e => animals.some(a => e.name?.toLowerCase().includes(a)));
+                        if (nearestAnimal && runtimeBot.entity.position.distanceTo(nearestAnimal.position) < 4) {
+                            runtimeBot.attack(nearestAnimal);
+                        }
+                    }, 500);
+                    runtimeBot._premiumModes.butcher = true;
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '🥩 Animal butcher mode enabled', timestamp: Date.now() });
+                    break;
+
+                case 'follow':
+                    const targetName = options?.targetPlayer;
+                    if (!targetName) return res.json({ success: false, error: 'Target player name required' });
+
+                    if (runtimeBot._followInterval) clearInterval(runtimeBot._followInterval);
+                    runtimeBot._followInterval = setInterval(() => {
+                        const target = runtimeBot.players[targetName]?.entity;
+                        if (!target) {
+                            // runtimeBot.lookAt(runtimeBot.entity.position); // Look straight if lost
+                            return;
+                        }
+
+                        const distance = runtimeBot.entity.position.distanceTo(target.position);
+                        runtimeBot.lookAt(target.position.offset(0, target.height, 0));
+
+                        if (distance > 2) {
+                            runtimeBot.setControlState('forward', true);
+                            if (runtimeBot.entity.isCollidedHorizontally) runtimeBot.setControlState('jump', true);
+                            else runtimeBot.setControlState('jump', false);
+
+                            // Simple water handling
+                            if (runtimeBot.entity.isInWater) runtimeBot.setControlState('jump', true);
+
+                            // Sprint if far
+                            runtimeBot.setControlState('sprint', distance > 5);
+                        } else {
+                            runtimeBot.clearControlStates();
+                        }
+                    }, 50); // Frequent updates for smooth movement
+                    runtimeBot._premiumModes.follow = true;
+                    io.to(botRecord.sessionId).emit('bot:message', { message: `👣 Following ${targetName}`, timestamp: Date.now() });
+                    break;
+
+                case 'skin':
+                    const skinName = options?.skinName;
+                    if (!skinName) return res.json({ success: false, error: 'Skin name required' });
+
+                    // Attempt to use /skin command (common in offline servers/plugins like SkinRestorer)
+                    runtimeBot.chat(`/skin ${skinName}`);
+                    io.to(botRecord.sessionId).emit('bot:message', { message: `🎨 Attempting to set skin to: ${skinName}`, timestamp: Date.now() });
+                    // We don't really 'enable' skin mode persistently like others, it's a one-off action usually
+                    // But we can mark it as last used
+                    runtimeBot._premiumModes.skin = true;
+                    break;
+            }
+        } else {
+            // Disable the mode
+            switch (mode) {
+                case 'attack':
+                    if (runtimeBot._attackInterval) clearInterval(runtimeBot._attackInterval);
+                    runtimeBot._premiumModes.attack = false;
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '⚔️ Attack mode disabled', timestamp: Date.now() });
+                    break;
+                case 'mining':
+                    if (runtimeBot._miningInterval) clearInterval(runtimeBot._miningInterval);
+                    runtimeBot._premiumModes.mining = false;
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '⛏️ Mining mode disabled', timestamp: Date.now() });
+                    break;
+                case 'butcher':
+                    if (runtimeBot._butcherInterval) clearInterval(runtimeBot._butcherInterval);
+                    runtimeBot._premiumModes.butcher = false;
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '🥩 Animal butcher mode disabled', timestamp: Date.now() });
+                    break;
+                case 'follow':
+                    if (runtimeBot._followInterval) clearInterval(runtimeBot._followInterval);
+                    runtimeBot.clearControlStates();
+                    runtimeBot._premiumModes.follow = false;
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '👣 Follow mode disabled', timestamp: Date.now() });
+                    break;
+                // Skin mode doesn't really have a 'disable' state unless we reset to default, but usually that's just setting skin to username
+                case 'skin':
+                    runtimeBot.chat(`/skin ${botRecord.username}`);
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '🎨 Skin reset to default', timestamp: Date.now() });
+                    break;
+            }
+        }
+
+        res.json({ success: true, mode, enabled, activeModes: runtimeBot._premiumModes });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 // ============= IP LOGGER ROUTES =============
 
 app.post('/api/iplogger/create', authenticateToken, async (req, res) => {

@@ -7,6 +7,7 @@ const UserSchema = new mongoose.Schema({
     password: String,
     credits: { type: Number, default: 0 },
     lastDailyClaim: String,
+    unlockedModes: { type: [String], default: [] }, // ['attack', 'mining', 'butcher']
     createdAt: Number
 });
 
