@@ -756,6 +756,9 @@ app.get('/api/bot/status/:sessionId', (req, res) => {
 // ============= PREMIUM BOT MODES =============
 
 const PREMIUM_MODES = ['attack', 'mining', 'butcher', 'follow', 'skin'];
+const TIER_1_MODES = ['attack', 'mining', 'butcher']; // Basic connection to survival modes
+const TIER_2_MODES = ['follow', 'skin']; // Advanced social/control modes
+
 const MODE_COSTS = {
     'attack': 100,
     'mining': 100,
@@ -769,7 +772,15 @@ app.get('/api/bot/modes', requireAuth, async (req, res) => {
     try {
         const user = await User.findOne({ username: req.user.username });
         const isPremium = user.premiumUntil && user.premiumUntil > Date.now();
-        res.json({ success: true, unlockedModes: isPremium ? PREMIUM_MODES : (user?.unlockedModes || []), isPremium });
+        const tier = isPremium ? (user.premiumTier || 1) : 0;
+
+        let unlocked = [...(user?.unlockedModes || [])];
+        if (isPremium) {
+            if (tier >= 1) unlocked = [...new Set([...unlocked, ...TIER_1_MODES])];
+            if (tier >= 2) unlocked = [...new Set([...unlocked, ...TIER_1_MODES, ...TIER_2_MODES])];
+        }
+
+        res.json({ success: true, unlockedModes: unlocked, isPremium, premiumTier: tier, premiumUntil: user.premiumUntil });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
@@ -786,7 +797,14 @@ app.post('/api/bot/modes/unlock', requireAuth, async (req, res) => {
         const user = await User.findOne({ username: req.user.username });
         if (!user) return res.json({ success: false, error: 'User not found' });
 
-        if (user.unlockedModes?.includes(mode)) {
+        // Check if already covered by premium
+        const isPremium = user.premiumUntil && user.premiumUntil > Date.now();
+        const tier = isPremium ? (user.premiumTier || 1) : 0;
+
+        const coveredByTier1 = tier >= 1 && TIER_1_MODES.includes(mode);
+        const coveredByTier2 = tier >= 2 && (TIER_1_MODES.includes(mode) || TIER_2_MODES.includes(mode));
+
+        if (coveredByTier1 || coveredByTier2 || user.unlockedModes?.includes(mode)) {
             return res.json({ success: false, error: 'Mode already unlocked' });
         }
 
@@ -811,37 +829,66 @@ app.get('/api/bot/subscription', requireAuth, async (req, res) => {
     try {
         const user = await User.findOne({ username: req.user.username });
         const isPremium = user.premiumUntil && user.premiumUntil > Date.now();
-        res.json({ success: true, isPremium, premiumUntil: user.premiumUntil });
+        res.json({ success: true, isPremium, premiumTier: user.premiumTier || 0, premiumUntil: user.premiumUntil });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
 });
 
-// Upgrade to Premium (Mock/Admin - normally payment gateway callback)
+// Upgrade to Premium
 app.post('/api/bot/subscription/upgrade', requireAuth, async (req, res) => {
-    // In a real app, this would verify a payment transaction ID
-    // For now, we'll allow upgrades via a "secret code" or just a direct mock for the user request
-    const { durationDays = 30 } = req.body;
-
-    // Simple cost check: 50 INR (represented as 5000 credits? Or external?)
-    // User asked for "50 INR", assuming external payment.
-    // We will just enable it for now or require a "special admin code"
-    // Let's implement a credit-based fallback: 500 credits = 1 month premium (if we equate 10 INR = 100 credits)
-    // Or just a free upgrade for now since it's a requested feature demo
+    const { packageId } = req.body; // 'silver_credit', 'silver_inr', 'gold_inr'
 
     try {
         const user = await User.findOne({ username: req.user.username });
         if (!user) return res.json({ success: false, error: 'User not found' });
 
-        // Grant 30 days
-        const currentExpiry = user.premiumUntil > Date.now() ? user.premiumUntil : Date.now();
+        let durationDays = 0;
+        let setTier = 1;
+        let costCredits = 0;
+        let isFiat = false;
+
+        switch (packageId) {
+            case 'silver_credit': // 250 credits = 14 days, Tier 1
+                durationDays = 14;
+                setTier = 1;
+                costCredits = 250;
+                break;
+            case 'silver_inr': // 50 INR = 30 days, Tier 1
+                durationDays = 30;
+                setTier = 1;
+                isFiat = true; // Demo: free for now or mock payment
+                break;
+            case 'gold_inr': // 100 INR = 30 days, Tier 2 (All)
+                durationDays = 30;
+                setTier = 2;
+                isFiat = true;
+                break;
+            default:
+                return res.json({ success: false, error: 'Invalid package' });
+        }
+
+        if (costCredits > 0) {
+            if ((user.credits || 0) < costCredits) {
+                return res.json({ success: false, error: `Insufficient credits. Need ${costCredits}.` });
+            }
+            user.credits -= costCredits;
+        }
+
+        // Apply subscription
+        const currentExpiry = (user.premiumUntil > Date.now()) ? user.premiumUntil : Date.now();
         const newExpiry = new Date(currentExpiry);
         newExpiry.setDate(newExpiry.getDate() + durationDays);
 
         user.premiumUntil = newExpiry.getTime();
+        // Upgrade tier if current is lower, but don't downgrade if user has higher tier active? 
+        // For simplicity: overwriting tier is usually expected on new sub, or we take max.
+        // Let's just set it to the purchased tier.
+        user.premiumTier = setTier;
+
         await user.save();
 
-        res.json({ success: true, message: 'Premium activated!', premiumUntil: user.premiumUntil });
+        res.json({ success: true, message: `Premium upgraded to Tier ${setTier}!`, premiumUntil: user.premiumUntil, tier: setTier, credits: user.credits });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
@@ -859,9 +906,19 @@ app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
     try {
         const user = await User.findOne({ username: req.user.username });
         const isPremium = user.premiumUntil && user.premiumUntil > Date.now();
+        const tier = isPremium ? (user.premiumTier || 0) : 0;
 
-        if (!isPremium && !user?.unlockedModes?.includes(mode)) {
+        const coveredByTier1 = tier >= 1 && TIER_1_MODES.includes(mode);
+        const coveredByTier2 = tier >= 2 && (TIER_1_MODES.includes(mode) || TIER_2_MODES.includes(mode));
+        const isUnlocked = user?.unlockedModes?.includes(mode);
+
+        if (!isPremium && !isUnlocked) {
             return res.json({ success: false, error: 'Mode not unlocked. Unlock it first!' });
+        }
+
+        if (isPremium && !coveredByTier1 && !coveredByTier2 && !isUnlocked) {
+            // User is premium but this mode isn't in their tier (e.g. Silver user trying Follow mode)
+            return res.json({ success: false, error: `This mode requires Gold Tier or individual unlock.` });
         }
 
         const botRecord = await Bot.findOne({ userId });
