@@ -928,22 +928,119 @@ app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
         if (enabled) {
             // Enable the mode
             switch (mode) {
+// Helper: Equip Best Tool
+const equipBestTool = async (bot, category) => {
+                if (!bot || !bot.inventory) return false;
+                const items = bot.inventory.items();
+                let bestItem = null;
+
+                if (category === 'weapon') {
+                    const weapons = items.filter(i => i.name.includes('sword') || i.name.includes('axe'));
+                    // Sort by damage (rough approximation: netherite > diamond > iron > stone > wood > gold)
+                    const materials = ['netherite', 'diamond', 'iron', 'stone', 'wood', 'gold'];
+                    weapons.sort((a, b) => {
+                        const aMat = materials.findIndex(m => a.name.includes(m));
+                        const bMat = materials.findIndex(m => b.name.includes(m));
+                        return (aMat === -1 ? 99 : aMat) - (bMat === -1 ? 99 : bMat);
+                    });
+                    bestItem = weapons[0];
+                } else if (category === 'mining') {
+                    const picks = items.filter(i => i.name.includes('pickaxe'));
+                    const materials = ['netherite', 'diamond', 'iron', 'stone', 'wood', 'gold'];
+                    picks.sort((a, b) => {
+                        const aMat = materials.findIndex(m => a.name.includes(m));
+                        const bMat = materials.findIndex(m => b.name.includes(m));
+                        return (aMat === -1 ? 99 : aMat) - (bMat === -1 ? 99 : bMat);
+                    });
+                    bestItem = picks[0];
+                }
+
+                if (bestItem) {
+                    try {
+                        await bot.equip(bestItem, 'hand');
+                        return true;
+                    } catch (e) { return false; }
+                }
+                return false;
+            };
+
+            // ... inside switch(mode) ...
+            switch (mode) {
                 case 'attack':
                     if (runtimeBot._attackInterval) clearInterval(runtimeBot._attackInterval);
-                    runtimeBot._attackInterval = setInterval(() => {
-                        const nearestEntity = runtimeBot.nearestEntity(e => e.type === 'player' || e.type === 'hostile');
-                        if (nearestEntity && runtimeBot.entity.position.distanceTo(nearestEntity.position) < 4) {
-                            runtimeBot.attack(nearestEntity);
+
+                    // Pro PvP State
+                    runtimeBot._pvpStrafeDir = 'left';
+                    setInterval(() => {
+                        runtimeBot._pvpStrafeDir = (Math.random() > 0.5) ? 'left' : 'right';
+                    }, 1500); // Random Strafe Switch
+
+                    runtimeBot._attackInterval = setInterval(async () => {
+                        // 1. Equip Weapon
+                        const hasWeapon = await equipBestTool(runtimeBot, 'weapon');
+                        if (!hasWeapon) {
+                            const now = Date.now();
+                            if (!runtimeBot._lastToolRequest || (now - runtimeBot._lastToolRequest > 30000)) {
+                                runtimeBot.chat("I need a sword or axe to fight!");
+                                runtimeBot._lastToolRequest = now;
+                            }
                         }
-                    }, 500);
+
+                        // 2. Find Target (Player/Hostile)
+                        const target = runtimeBot.nearestEntity(e => (e.type === 'player' && e.username !== runtimeBot.username) || e.type === 'hostile');
+
+                        // 3. Combat Logic
+                        if (target && runtimeBot.entity.position.distanceTo(target.position) < 20) {
+                            const dist = runtimeBot.entity.position.distanceTo(target.position);
+
+                            // Look at target (slightly upward for headshots/crits)
+                            runtimeBot.lookAt(target.position.offset(0, target.height * 0.85, 0));
+
+                            if (dist > 3.5) {
+                                // CHASE: Sprint Jump
+                                runtimeBot.setControlState('forward', true);
+                                runtimeBot.setControlState('sprint', true);
+                                runtimeBot.setControlState('jump', runtimeBot.entity.isCollidedHorizontally || runtimeBot.entity.isInWater);
+                                // Reset combat states
+                                runtimeBot.setControlState('sneak', false);
+                            } else {
+                                // COMBAT: Close Range
+                                runtimeBot.setControlState('forward', true); // Keep pressure
+                                runtimeBot.setControlState('sprint', false); // Optional: Stop sprint to avoid knocked back too far? keeping it simple
+
+                                // Strafe
+                                runtimeBot.setControlState(runtimeBot._pvpStrafeDir, true);
+                                runtimeBot.setControlState((runtimeBot._pvpStrafeDir === 'left' ? 'right' : 'left'), false);
+
+                                // CRIT: Jump while attacking
+                                runtimeBot.setControlState('jump', true);
+
+                                // Attack
+                                runtimeBot.attack(target);
+                            }
+                        } else {
+                            // No target / Idle
+                            runtimeBot.clearControlStates();
+                        }
+                    }, 50); // Fast tick for smooth movement
                     runtimeBot._premiumModes.attack = true;
-                    io.to(botRecord.sessionId).emit('bot:message', { message: '⚔️ Attack mode enabled', timestamp: Date.now() });
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '⚔️ Pro PvP enabled: Chasing & Crits', timestamp: Date.now() });
                     break;
 
                 case 'mining':
                     if (runtimeBot._miningInterval) clearInterval(runtimeBot._miningInterval);
                     runtimeBot._miningInterval = setInterval(async () => {
                         try {
+                            // Equip Pickaxe
+                            const hasPick = await equipBestTool(runtimeBot, 'mining');
+                            if (!hasPick) {
+                                const now = Date.now();
+                                if (!runtimeBot._lastToolRequest || (now - runtimeBot._lastToolRequest > 30000)) {
+                                    runtimeBot.chat("I need a pickaxe to mine properly!");
+                                    runtimeBot._lastToolRequest = now;
+                                }
+                            }
+
                             if (runtimeBot.entity.velocity.y > -0.1) { // Only if not falling
                                 const block = runtimeBot.findBlock({ matching: (b) => b.name.includes('ore') || b.name.includes('stone') || b.name.includes('log'), maxDistance: 4 });
                                 if (block) await runtimeBot.dig(block);
@@ -956,10 +1053,14 @@ app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
 
                 case 'butcher':
                     if (runtimeBot._butcherInterval) clearInterval(runtimeBot._butcherInterval);
-                    runtimeBot._butcherInterval = setInterval(() => {
+                    runtimeBot._butcherInterval = setInterval(async () => {
+                        // Equip Weapon
+                        await equipBestTool(runtimeBot, 'weapon'); // Silent check for butcher
+
                         const animals = ['cow', 'pig', 'sheep', 'chicken', 'rabbit'];
                         const nearestAnimal = runtimeBot.nearestEntity(e => animals.some(a => e.name?.toLowerCase().includes(a)));
                         if (nearestAnimal && runtimeBot.entity.position.distanceTo(nearestAnimal.position) < 4) {
+                            runtimeBot.lookAt(nearestAnimal.position.offset(0, nearestAnimal.height * 0.5, 0));
                             runtimeBot.attack(nearestAnimal);
                         }
                     }, 500);
@@ -974,10 +1075,7 @@ app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
                     if (runtimeBot._followInterval) clearInterval(runtimeBot._followInterval);
                     runtimeBot._followInterval = setInterval(() => {
                         const target = runtimeBot.players[targetName]?.entity;
-                        if (!target) {
-                            // runtimeBot.lookAt(runtimeBot.entity.position); // Look straight if lost
-                            return;
-                        }
+                        if (!target) return;
 
                         const distance = runtimeBot.entity.position.distanceTo(target.position);
                         runtimeBot.lookAt(target.position.offset(0, target.height, 0));
@@ -990,8 +1088,8 @@ app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
                             // Simple water handling
                             if (runtimeBot.entity.isInWater) runtimeBot.setControlState('jump', true);
 
-                            // Sprint if far
-                            runtimeBot.setControlState('sprint', distance > 5);
+                            // Sprint if far (>4 blocks now)
+                            runtimeBot.setControlState('sprint', distance > 4);
                         } else {
                             runtimeBot.clearControlStates();
                         }
@@ -1001,14 +1099,11 @@ app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
                     break;
 
                 case 'skin':
+                    // ... unchanged ...
                     const skinName = options?.skinName;
-                    if (!skinName) return res.json({ success: false, error: 'Skin name required' });
-
-                    // Attempt to use /skin command (common in offline servers/plugins like SkinRestorer)
+                    // ...
                     runtimeBot.chat(`/skin ${skinName}`);
                     io.to(botRecord.sessionId).emit('bot:message', { message: `🎨 Attempting to set skin to: ${skinName}`, timestamp: Date.now() });
-                    // We don't really 'enable' skin mode persistently like others, it's a one-off action usually
-                    // But we can mark it as last used
                     runtimeBot._premiumModes.skin = true;
                     break;
 
