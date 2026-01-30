@@ -15,9 +15,6 @@ const io = new Server(server, {
 });
 
 app.use(cors());
-app.use(express.json());
-
-// Root route - Backend Status Page
 app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
@@ -77,6 +74,9 @@ app.get('/', (req, res) => {
 
 const JWT_SECRET = process.env.JWT_SECRET || 'minex-secret-key-change-this';
 
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
 // In-Memory Runtime Data
 const activeBots = new Map(); // Runtime only, not persisted
 
@@ -99,12 +99,17 @@ async function createUser(userData) {
 }
 
 // Middleware
-const authenticateToken = (req, res, next) => {
+const requireAuth = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return next();
+
+    if (!token || token === 'null' || token === 'undefined') {
+        return res.status(401).json({ success: false, error: 'Authorization token required' });
+    }
+
     jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (!err) req.user = user;
+        if (err) return res.status(403).json({ success: false, error: 'Invalid or expired token' });
+        req.user = user;
         next();
     });
 };
@@ -118,17 +123,19 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
     }
 });
 
-const requireAuth = (req, res, next) => {
+const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-    if (token == null) return res.sendStatus(401);
+
+    if (!token || token === 'null' || token === 'undefined') {
+        return next();
+    }
+
     jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) return res.sendStatus(403);
-        req.user = user;
+        if (!err) req.user = user;
         next();
     });
 };
-// const authenticateToken = requireAuth; // Removed duplicate declaration
 
 // ============= ADMIN ROUTES =============
 
