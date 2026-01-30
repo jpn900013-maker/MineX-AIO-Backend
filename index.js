@@ -482,6 +482,21 @@ function spawnBotProcess(botData) {
         bot.on('chat', (username, message) => io.to(sessionId).emit('bot:chat', { username, message, timestamp: Date.now() }));
         bot.on('message', (message) => io.to(sessionId).emit('bot:message', { message: message.toString(), timestamp: Date.now() }));
 
+        // Auto-respawn on death
+        bot.on('death', () => {
+            io.to(sessionId).emit('bot:message', { message: 'Bot died!', timestamp: Date.now() });
+            if (botData.config?.autoRespawn !== false) { // Default to true
+                setTimeout(() => {
+                    try {
+                        bot.chat('/respawn'); // Works on some servers
+                    } catch (e) { }
+                    try {
+                        bot._client.write('client_command', { action: 0 }); // Respawn packet
+                    } catch (e) { }
+                }, 1000);
+            }
+        });
+
         bot.on('error', (err) => {
             const errorMsg = typeof err === 'string' ? err : err.message || JSON.stringify(err);
             io.to(sessionId).emit('bot:error', { error: errorMsg });
