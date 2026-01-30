@@ -532,21 +532,42 @@ function spawnBotProcess(botData) {
 
         // Auto Chat & Movement Intervals
         if (botData.config?.autoChat) {
-            const messages = ["Hello!", "I am a bot", "Mining...", "Anyone here?", "Lag?", "Nice server"];
-            const chatInt = setInterval(() => {
-                if (!activeBots.has(sessionId)) return clearInterval(chatInt);
+            console.log(`[${sessionId}] AutoChat enabled`);
+            const messages = ["Hello!", "I am a bot", "Mining...", "Anyone here?", "Lag?", "Nice server", "AFK", "BRB"];
+            bot._chatInterval = setInterval(() => {
+                if (!activeBots.has(sessionId)) return clearInterval(bot._chatInterval);
                 const msg = messages[Math.floor(Math.random() * messages.length)];
                 bot.chat(msg);
-            }, 30000);
+            }, 15000); // reduced to 15s
         }
 
         if (botData.config?.randomMovement) {
-            const moveInt = setInterval(() => {
-                if (!activeBots.has(sessionId)) return clearInterval(moveInt);
-                const dir = ['forward', 'back', 'left', 'right', 'jump', 'sprint'][Math.floor(Math.random() * 6)];
-                bot.setControlState(dir, true);
-                setTimeout(() => bot.setControlState(dir, false), 1000); // Move for 1s
-            }, 5000);
+            console.log(`[${sessionId}] RandomMovement enabled`);
+            bot._moveInterval = setInterval(() => {
+                if (!activeBots.has(sessionId)) return clearInterval(bot._moveInterval);
+
+                const actions = ['forward', 'back', 'left', 'right', 'jump_forward', 'sprint_forward'];
+                const action = actions[Math.floor(Math.random() * actions.length)];
+
+                if (action === 'jump_forward') {
+                    bot.setControlState('forward', true);
+                    bot.setControlState('jump', true);
+                    setTimeout(() => {
+                        bot.setControlState('forward', false);
+                        bot.setControlState('jump', false);
+                    }, 1000);
+                } else if (action === 'sprint_forward') {
+                    bot.setControlState('forward', true);
+                    bot.setControlState('sprint', true);
+                    setTimeout(() => {
+                        bot.setControlState('forward', false);
+                        bot.setControlState('sprint', false);
+                    }, 1500);
+                } else {
+                    bot.setControlState(action, true);
+                    setTimeout(() => bot.setControlState(action, false), 1000 + Math.random() * 1000);
+                }
+            }, 4000); // reduced to 4s
         }
 
         activeBots.set(sessionId, bot);
@@ -755,16 +776,17 @@ app.get('/api/bot/status/:sessionId', (req, res) => {
 
 // ============= PREMIUM BOT MODES =============
 
-const PREMIUM_MODES = ['attack', 'mining', 'butcher', 'follow', 'skin'];
+const PREMIUM_MODES = ['attack', 'mining', 'butcher', 'follow', 'skin', 'drop_all'];
 const TIER_1_MODES = ['attack', 'mining', 'butcher']; // Basic connection to survival modes
-const TIER_2_MODES = ['follow', 'skin']; // Advanced social/control modes
+const TIER_2_MODES = ['follow', 'skin', 'drop_all']; // Advanced social/control modes
 
 const MODE_COSTS = {
-    'attack': 100,
-    'mining': 100,
-    'butcher': 100,
-    'follow': 200,
-    'skin': 50
+    'attack': 150,
+    'mining': 150,
+    'butcher': 150,
+    'follow': 300,
+    'skin': 100,
+    'drop_all': 50
 };
 
 // Get user's unlocked modes
@@ -835,60 +857,33 @@ app.get('/api/bot/subscription', requireAuth, async (req, res) => {
     }
 });
 
-// Upgrade to Premium
-app.post('/api/bot/subscription/upgrade', requireAuth, async (req, res) => {
-    const { packageId } = req.body; // 'silver_credit', 'silver_inr', 'gold_inr'
+// Admin: Grant Premium Manually
+app.post('/api/admin/grant-premium', requireAuth, async (req, res) => {
+    const { targetUsername, durationDays = 30, tier = 1, adminKey } = req.body;
+
+    // Simple Admin Key Check (In production, use env var or proper role auth)
+    if (adminKey !== 'minex-admin-secret') {
+        return res.json({ success: false, error: 'Invalid Admin Key' });
+    }
 
     try {
-        const user = await User.findOne({ username: req.user.username });
-        if (!user) return res.json({ success: false, error: 'User not found' });
-
-        let durationDays = 0;
-        let setTier = 1;
-        let costCredits = 0;
-        let isFiat = false;
-
-        switch (packageId) {
-            case 'silver_credit': // 250 credits = 14 days, Tier 1
-                durationDays = 14;
-                setTier = 1;
-                costCredits = 250;
-                break;
-            case 'silver_inr': // 50 INR = 30 days, Tier 1
-                durationDays = 30;
-                setTier = 1;
-                isFiat = true; // Demo: free for now or mock payment
-                break;
-            case 'gold_inr': // 100 INR = 30 days, Tier 2 (All)
-                durationDays = 30;
-                setTier = 2;
-                isFiat = true;
-                break;
-            default:
-                return res.json({ success: false, error: 'Invalid package' });
-        }
-
-        if (costCredits > 0) {
-            if ((user.credits || 0) < costCredits) {
-                return res.json({ success: false, error: `Insufficient credits. Need ${costCredits}.` });
-            }
-            user.credits -= costCredits;
-        }
+        const user = await User.findOne({ username: targetUsername });
+        if (!user) return res.json({ success: false, error: 'Target user not found' });
 
         // Apply subscription
         const currentExpiry = (user.premiumUntil > Date.now()) ? user.premiumUntil : Date.now();
         const newExpiry = new Date(currentExpiry);
-        newExpiry.setDate(newExpiry.getDate() + durationDays);
+        newExpiry.setDate(newExpiry.getDate() + parseInt(durationDays));
 
         user.premiumUntil = newExpiry.getTime();
-        // Upgrade tier if current is lower, but don't downgrade if user has higher tier active? 
-        // For simplicity: overwriting tier is usually expected on new sub, or we take max.
-        // Let's just set it to the purchased tier.
-        user.premiumTier = setTier;
+        user.premiumTier = parseInt(tier); // 1 = Silver, 2 = Gold
 
         await user.save();
 
-        res.json({ success: true, message: `Premium upgraded to Tier ${setTier}!`, premiumUntil: user.premiumUntil, tier: setTier, credits: user.credits });
+        res.json({
+            success: true,
+            message: `Premium granted to ${targetUsername} (Tier ${tier}) until ${newExpiry.toLocaleDateString()}`
+        });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
@@ -1015,6 +1010,31 @@ app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
                     // We don't really 'enable' skin mode persistently like others, it's a one-off action usually
                     // But we can mark it as last used
                     runtimeBot._premiumModes.skin = true;
+                    break;
+
+                case 'drop_all':
+                    if (runtimeBot._dropInterval) clearInterval(runtimeBot._dropInterval);
+                    console.log(`[${botRecord.sessionId}] Auto-Drop started`);
+                    runtimeBot._dropInterval = setInterval(async () => {
+                        if (!runtimeBot || !runtimeBot.inventory) return;
+
+                        // Get all non-empty items
+                        const items = runtimeBot.inventory.items();
+                        if (items.length === 0) return;
+
+                        // Toss the first available item
+                        const itemToDrop = items[0];
+                        if (itemToDrop) {
+                            try {
+                                console.log(`[${botRecord.sessionId}] Dropping ${itemToDrop.name} x${itemToDrop.count}`);
+                                await runtimeBot.tossStack(itemToDrop);
+                            } catch (e) {
+                                console.error(`[${botRecord.sessionId}] Drop failed: ${e.message}`);
+                            }
+                        }
+                    }, 800); // 800ms interval to be safe
+                    runtimeBot._premiumModes.drop_all = true;
+                    io.to(botRecord.sessionId).emit('bot:message', { message: '🗑️ Auto-Drop enabled', timestamp: Date.now() });
                     break;
             }
         } else {
