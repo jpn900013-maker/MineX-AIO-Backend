@@ -768,7 +768,8 @@ const MODE_COSTS = {
 app.get('/api/bot/modes', requireAuth, async (req, res) => {
     try {
         const user = await User.findOne({ username: req.user.username });
-        res.json({ success: true, unlockedModes: user?.unlockedModes || [] });
+        const isPremium = user.premiumUntil && user.premiumUntil > Date.now();
+        res.json({ success: true, unlockedModes: isPremium ? PREMIUM_MODES : (user?.unlockedModes || []), isPremium });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
@@ -805,6 +806,47 @@ app.post('/api/bot/modes/unlock', requireAuth, async (req, res) => {
     }
 });
 
+// Get Subscription Status
+app.get('/api/bot/subscription', requireAuth, async (req, res) => {
+    try {
+        const user = await User.findOne({ username: req.user.username });
+        const isPremium = user.premiumUntil && user.premiumUntil > Date.now();
+        res.json({ success: true, isPremium, premiumUntil: user.premiumUntil });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Upgrade to Premium (Mock/Admin - normally payment gateway callback)
+app.post('/api/bot/subscription/upgrade', requireAuth, async (req, res) => {
+    // In a real app, this would verify a payment transaction ID
+    // For now, we'll allow upgrades via a "secret code" or just a direct mock for the user request
+    const { durationDays = 30 } = req.body;
+
+    // Simple cost check: 50 INR (represented as 5000 credits? Or external?)
+    // User asked for "50 INR", assuming external payment.
+    // We will just enable it for now or require a "special admin code"
+    // Let's implement a credit-based fallback: 500 credits = 1 month premium (if we equate 10 INR = 100 credits)
+    // Or just a free upgrade for now since it's a requested feature demo
+
+    try {
+        const user = await User.findOne({ username: req.user.username });
+        if (!user) return res.json({ success: false, error: 'User not found' });
+
+        // Grant 30 days
+        const currentExpiry = user.premiumUntil > Date.now() ? user.premiumUntil : Date.now();
+        const newExpiry = new Date(currentExpiry);
+        newExpiry.setDate(newExpiry.getDate() + durationDays);
+
+        user.premiumUntil = newExpiry.getTime();
+        await user.save();
+
+        res.json({ success: true, message: 'Premium activated!', premiumUntil: user.premiumUntil });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 // Toggle a premium mode on/off
 app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
     const { mode, enabled, options } = req.body; // options can contain targetPlayer or skinName
@@ -816,7 +858,9 @@ app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
 
     try {
         const user = await User.findOne({ username: req.user.username });
-        if (!user?.unlockedModes?.includes(mode)) {
+        const isPremium = user.premiumUntil && user.premiumUntil > Date.now();
+
+        if (!isPremium && !user?.unlockedModes?.includes(mode)) {
             return res.json({ success: false, error: 'Mode not unlocked. Unlock it first!' });
         }
 

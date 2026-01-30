@@ -8,6 +8,7 @@ const UserSchema = new mongoose.Schema({
     credits: { type: Number, default: 0 },
     lastDailyClaim: String,
     unlockedModes: { type: [String], default: [] }, // ['attack', 'mining', 'butcher']
+    premiumUntil: { type: Number, default: 0 }, // Timestamp for subscription expiry
     createdAt: Number
 });
 
