@@ -73,6 +73,16 @@ const BotSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
 });
 
+const PromoCodeSchema = new mongoose.Schema({
+    code: { type: String, unique: true, required: true },
+    credits: { type: Number, required: true },
+    maxUses: { type: Number, required: true },
+    usedCount: { type: Number, default: 0 },
+    usedBy: { type: [String], default: [] },
+    createdAt: { type: Number, default: Date.now },
+    isActive: { type: Boolean, default: true }
+});
+
 // Models
 const User = mongoose.model('User', UserSchema);
 const Paste = mongoose.model('Paste', PasteSchema);
@@ -81,6 +91,7 @@ const Account = mongoose.model('Account', AccountSchema);
 const ToolAccessCode = mongoose.model('ToolAccessCode', ToolAccessCodeSchema);
 const GeneratedLink = mongoose.model('GeneratedLink', GeneratedLinkSchema);
 const Bot = mongoose.model('Bot', BotSchema);
+const PromoCode = mongoose.model('PromoCode', PromoCodeSchema);
 
 class DatabaseManager {
     constructor() {
@@ -281,4 +292,4 @@ class DatabaseManager {
 // End of Class
 
 
-module.exports = { DatabaseManager, User, Paste, IpLog, Account, ToolAccessCode, GeneratedLink, Bot };
+module.exports = { DatabaseManager, User, Paste, IpLog, Account, ToolAccessCode, GeneratedLink, Bot, PromoCode };

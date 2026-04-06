@@ -6,7 +6,7 @@ const cors = require('cors');
 const mineflayer = require('mineflayer');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { DatabaseManager, User, Paste, IpLog, Account, GeneratedLink, Bot } = require('./database');
+const { DatabaseManager, User, Paste, IpLog, Account, GeneratedLink, Bot, PromoCode } = require('./database');
 
 // Helper: Equip Best Tool
 const equipBestTool = async (bot, category) => {
@@ -487,6 +487,89 @@ app.get('/api/user/generation-history', requireAuth, async (req, res) => {
     // This would need a proper history collection in MongoDB
     // For now, return empty array as placeholder
     res.json({ success: true, history: [] });
+});
+
+// ============= PROMO CODE ROUTES =============
+
+// Admin: Create promo code
+app.post('/api/admin/promo/create', requireAdmin, async (req, res) => {
+    const { code, credits, maxUses } = req.body;
+    if (!code || !credits || !maxUses) {
+        return res.json({ success: false, error: 'Code, credits, and max uses are required' });
+    }
+    try {
+        const existing = await PromoCode.findOne({ code: code.toUpperCase() });
+        if (existing) return res.json({ success: false, error: 'Promo code already exists' });
+
+        const promo = new PromoCode({
+            code: code.toUpperCase(),
+            credits: parseInt(credits),
+            maxUses: parseInt(maxUses),
+            createdAt: Date.now()
+        });
+        await promo.save();
+        res.json({ success: true, message: `Promo code ${promo.code} created`, promo });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Admin: List all promo codes
+app.get('/api/admin/promo/list', requireAdmin, async (req, res) => {
+    try {
+        const promos = await PromoCode.find({}).sort({ createdAt: -1 });
+        res.json({ success: true, promos });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Admin: Delete promo code
+app.delete('/api/admin/promo/:code/delete', requireAdmin, async (req, res) => {
+    try {
+        const result = await PromoCode.findOneAndDelete({ code: req.params.code.toUpperCase() });
+        if (!result) return res.json({ success: false, error: 'Promo code not found' });
+        res.json({ success: true, message: 'Promo code deleted' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// User: Redeem promo code
+app.post('/api/user/promo/redeem', requireAuth, async (req, res) => {
+    const { code } = req.body;
+    if (!code) return res.json({ success: false, error: 'Promo code is required' });
+
+    try {
+        const promo = await PromoCode.findOne({ code: code.toUpperCase(), isActive: true });
+        if (!promo) return res.json({ success: false, error: 'Invalid or expired promo code' });
+
+        if (promo.usedCount >= promo.maxUses) {
+            return res.json({ success: false, error: 'This promo code has reached its usage limit' });
+        }
+
+        if (promo.usedBy.includes(req.user.username)) {
+            return res.json({ success: false, error: 'You have already redeemed this code' });
+        }
+
+        // Award credits to user
+        const user = await User.findOneAndUpdate(
+            { username: req.user.username },
+            { $inc: { credits: promo.credits } },
+            { new: true }
+        );
+        if (!user) return res.json({ success: false, error: 'User not found' });
+
+        // Update promo code usage
+        promo.usedCount += 1;
+        promo.usedBy.push(req.user.username);
+        if (promo.usedCount >= promo.maxUses) promo.isActive = false;
+        await promo.save();
+
+        res.json({ success: true, message: `Redeemed! You received ${promo.credits} credits.`, credits: user.credits });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
 });
 
 // ============= MC BOT ROUTES (Persistent) =============
