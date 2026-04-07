@@ -592,6 +592,17 @@ app.post('/api/user/promo/redeem', requireAuth, async (req, res) => {
 
 // ============= MC BOT ROUTES (Persistent) =============
 
+// Per-session chat history ring buffer (last 50 messages)
+const chatHistories = new Map();
+const MAX_CHAT_HISTORY = 50;
+
+function pushChatHistory(sessionId, entry) {
+    if (!chatHistories.has(sessionId)) chatHistories.set(sessionId, []);
+    const history = chatHistories.get(sessionId);
+    history.push(entry);
+    if (history.length > MAX_CHAT_HISTORY) history.shift();
+}
+
 // Helper: Spawn Bot Process
 function spawnBotProcess(botData) {
     const { sessionId, host, port, username, version } = botData;
@@ -608,7 +619,7 @@ function spawnBotProcess(botData) {
             auth: 'offline',
             viewDistance: 'tiny',
             hideErrors: false,
-            checkTimeoutInterval: 120000,
+            checkTimeoutInterval: 300000,
             skipValidation: true
         });
 
@@ -617,8 +628,16 @@ function spawnBotProcess(botData) {
             io.to(sessionId).emit('bot:spawned', { position: bot.entity.position, health: bot.health, food: bot.food, spawnedAt: bot._spawnedAt });
         });
 
-        bot.on('chat', (username, message) => io.to(sessionId).emit('bot:chat', { username, message, timestamp: Date.now() }));
-        bot.on('message', (message) => io.to(sessionId).emit('bot:message', { message: message.toString(), timestamp: Date.now() }));
+        bot.on('chat', (username, message) => {
+            const entry = { type: 'chat', username, message, timestamp: Date.now() };
+            pushChatHistory(sessionId, entry);
+            io.to(sessionId).emit('bot:chat', entry);
+        });
+        bot.on('message', (message) => {
+            const entry = { type: 'system', message: message.toString(), timestamp: Date.now() };
+            pushChatHistory(sessionId, entry);
+            io.to(sessionId).emit('bot:message', entry);
+        });
 
         // Auto-respawn on death
         bot.on('death', () => {
@@ -643,26 +662,36 @@ function spawnBotProcess(botData) {
 
         bot.on('kicked', async (reason) => {
             io.to(sessionId).emit('bot:kicked', { reason });
+            // Cleanup intervals
+            if (bot._chatTimeout) clearTimeout(bot._chatTimeout);
+            if (bot._moveInterval) clearInterval(bot._moveInterval);
+            activeBots.delete(sessionId);
             if (botData.config?.autoReconnect && !bot._manuallyStopped) {
-                console.log(`[${sessionId}] Auto-reconnecting in 5s...`);
-                setTimeout(() => {
+                console.log(`[${sessionId}] Auto-reconnecting in 3s (kicked)...`);
+                setTimeout(async () => {
                     if (activeBots.has(sessionId)) return;
                     spawnBotProcess(botData);
-                }, 5000);
+                    // Update DB status back to online
+                    try { await Bot.updateOne({ sessionId }, { status: 'online' }); } catch(e) {}
+                }, 3000);
             }
-            activeBots.delete(sessionId);
         });
 
-        bot.on('end', async () => {
+        bot.on('end', async (reason) => {
             io.to(sessionId).emit('bot:disconnected');
+            // Cleanup intervals
+            if (bot._chatTimeout) clearTimeout(bot._chatTimeout);
+            if (bot._moveInterval) clearInterval(bot._moveInterval);
+            activeBots.delete(sessionId);
             if (botData.config?.autoReconnect && !bot._manuallyStopped) {
-                console.log(`[${sessionId}] Auto-reconnecting in 5s...`);
-                setTimeout(() => {
+                console.log(`[${sessionId}] Auto-reconnecting in 3s (end)...`);
+                setTimeout(async () => {
                     if (activeBots.has(sessionId)) return;
                     spawnBotProcess(botData);
-                }, 5000);
+                    // Update DB status back to online
+                    try { await Bot.updateOne({ sessionId }, { status: 'online' }); } catch(e) {}
+                }, 3000);
             }
-            activeBots.delete(sessionId);
         });
 
         // Auto Chat & Movement Intervals
@@ -905,10 +934,22 @@ app.get('/api/bot/my-bot', requireAuth, async (req, res) => {
             await botRecord.save();
         }
 
-        res.json({ success: true, hasBot: true, bot: botRecord });
+        // Include spawnedAt from runtime bot for uptime tracking
+        const botObj = botRecord.toObject ? botRecord.toObject() : { ...botRecord };
+        if (runtimeBot && runtimeBot._spawnedAt) {
+            botObj.spawnedAt = runtimeBot._spawnedAt;
+        }
+
+        res.json({ success: true, hasBot: true, bot: botObj });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
+});
+
+// Get Chat History for a session
+app.get('/api/bot/chat-history/:sessionId', requireAuth, (req, res) => {
+    const history = chatHistories.get(req.params.sessionId) || [];
+    res.json({ success: true, messages: history });
 });
 
 // Update Bot Config (host, port, settings)
