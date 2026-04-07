@@ -332,6 +332,25 @@ app.post('/api/admin/users/add-credits', requireAdmin, async (req, res) => {
     }
 });
 
+// Admin: Kill All Bots
+app.post('/api/admin/bots/kill-all', requireAdmin, async (req, res) => {
+    try {
+        let killed = 0;
+        for (const [sessionId, bot] of activeBots) {
+            try {
+                bot._manuallyStopped = true;
+                bot.quit();
+                killed++;
+            } catch (e) { }
+        }
+        activeBots.clear();
+        await Bot.updateMany({ status: 'online' }, { $set: { status: 'offline' } });
+        res.json({ success: true, message: `Killed ${killed} bot(s)`, killed });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 // ============= AUTH ROUTES =============
 
 app.post('/api/auth/register', async (req, res) => {
@@ -595,7 +614,8 @@ function spawnBotProcess(botData) {
         });
 
         bot.on('spawn', () => {
-            io.to(sessionId).emit('bot:spawned', { position: bot.entity.position, health: bot.health, food: bot.food });
+            bot._spawnedAt = Date.now();
+            io.to(sessionId).emit('bot:spawned', { position: bot.entity.position, health: bot.health, food: bot.food, spawnedAt: bot._spawnedAt });
         });
 
         bot.on('chat', (username, message) => io.to(sessionId).emit('bot:chat', { username, message, timestamp: Date.now() }));
@@ -624,14 +644,11 @@ function spawnBotProcess(botData) {
 
         bot.on('kicked', async (reason) => {
             io.to(sessionId).emit('bot:kicked', { reason });
-            // Auto Reconnect Logic would go here (requires complex loop or external manager)
-            // For now, if autoReconnect is true, we could attempt to respawn, but it risks loops.
-            // We'll leave it as a notifying feature for now or simple timeout respawn.
-            if (botData.config?.autoReconnect) {
+            if (botData.config?.autoReconnect && !bot._manuallyStopped) {
                 console.log(`[${sessionId}] Auto-reconnecting in 5s...`);
                 setTimeout(() => {
-                    if (activeBots.has(sessionId)) return; // Already online?
-                    spawnBotProcess(botData); // Recursive spawn
+                    if (activeBots.has(sessionId)) return;
+                    spawnBotProcess(botData);
                 }, 5000);
             }
             activeBots.delete(sessionId);
@@ -639,7 +656,7 @@ function spawnBotProcess(botData) {
 
         bot.on('end', async () => {
             io.to(sessionId).emit('bot:disconnected');
-            if (botData.config?.autoReconnect) {
+            if (botData.config?.autoReconnect && !bot._manuallyStopped) {
                 console.log(`[${sessionId}] Auto-reconnecting in 5s...`);
                 setTimeout(() => {
                     if (activeBots.has(sessionId)) return;
@@ -763,6 +780,7 @@ app.post('/api/bot/stop', requireAuth, async (req, res) => {
 
         const runtimeBot = activeBots.get(botRecord.sessionId);
         if (runtimeBot) {
+            runtimeBot._manuallyStopped = true;
             runtimeBot.quit();
             activeBots.delete(botRecord.sessionId);
         }
@@ -852,6 +870,31 @@ app.get('/api/bot/my-bot', requireAuth, async (req, res) => {
         }
 
         res.json({ success: true, hasBot: true, bot: botRecord });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Update Bot Config (host, port, settings)
+app.post('/api/bot/config/update', requireAuth, async (req, res) => {
+    const userId = req.user.id;
+    const { host, port, config } = req.body;
+
+    try {
+        const botRecord = await Bot.findOne({ userId });
+        if (!botRecord) return res.json({ success: false, error: 'No bot found' });
+
+        // Update host/port if provided
+        if (host) botRecord.host = host;
+        if (port) botRecord.port = parseInt(port) || 25565;
+
+        // Update config sub-object if provided
+        if (config && typeof config === 'object') {
+            botRecord.config = { ...botRecord.config, ...config };
+        }
+
+        await botRecord.save();
+        res.json({ success: true, message: 'Bot config updated', bot: botRecord });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
