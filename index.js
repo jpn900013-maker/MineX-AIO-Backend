@@ -152,8 +152,10 @@ const requireAuth = (req, res, next) => {
 
 app.get('/api/auth/me', requireAuth, async (req, res) => {
     try {
-        const user = await User.findById(req.user.id).select('-password');
-        res.json({ success: true, user });
+        const user = await findUser(req.user.username);
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+        const { password, ...userWithoutPassword } = user;
+        res.json({ success: true, user: userWithoutPassword });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
@@ -386,9 +388,6 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-app.get('/api/auth/me', requireAuth, (req, res) => {
-    res.json({ success: true, user: req.user });
-});
 
 app.get('/api/user/history', requireAuth, async (req, res) => {
     const userId = req.user.id;
