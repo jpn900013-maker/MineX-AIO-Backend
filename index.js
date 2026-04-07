@@ -1087,6 +1087,35 @@ app.post('/api/admin/grant-premium', requireAuth, async (req, res) => {
     }
 });
 
+// User: Buy Silver Premium with Credits (14 days, 250 credits)
+app.post('/api/user/buy-premium', requireAuth, async (req, res) => {
+    try {
+        const user = await User.findOne({ username: req.user.username });
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+        const cost = 250;
+        if ((user.credits || 0) < cost) {
+            return res.json({ success: false, error: 'Not enough credits (Requires 250)' });
+        }
+
+        user.credits -= cost;
+
+        const currentExpiry = (user.premiumUntil && user.premiumUntil > Date.now()) ? user.premiumUntil : Date.now();
+        const newExpiry = new Date(currentExpiry);
+        newExpiry.setDate(newExpiry.getDate() + 14);
+
+        user.premiumUntil = newExpiry.getTime();
+        if (!user.premiumTier || user.premiumTier < 1) {
+            user.premiumTier = 1;
+        }
+
+        await user.save();
+        res.json({ success: true, message: 'Successfully purchased Silver (14d)', credits: user.credits });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 // Toggle a premium mode on/off
 app.post('/api/bot/modes/toggle', requireAuth, async (req, res) => {
     const { mode, enabled, options } = req.body; // options can contain targetPlayer or skinName
