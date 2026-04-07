@@ -934,10 +934,11 @@ app.get('/api/bot/my-bot', requireAuth, async (req, res) => {
             await botRecord.save();
         }
 
-        // Include spawnedAt from runtime bot for uptime tracking
+        // Include spawnedAt and active modes from runtime bot
         const botObj = botRecord.toObject ? botRecord.toObject() : { ...botRecord };
-        if (runtimeBot && runtimeBot._spawnedAt) {
-            botObj.spawnedAt = runtimeBot._spawnedAt;
+        if (runtimeBot) {
+            if (runtimeBot._spawnedAt) botObj.spawnedAt = runtimeBot._spawnedAt;
+            if (runtimeBot._premiumModes) botObj.activeModes = runtimeBot._premiumModes;
         }
 
         res.json({ success: true, hasBot: true, bot: botObj });
