@@ -669,12 +669,49 @@ function spawnBotProcess(botData) {
         // Auto Chat & Movement Intervals
         if (botData.config?.autoChat) {
             console.log(`[${sessionId}] AutoChat enabled`);
-            const messages = ["Hello!", "I am a bot", "Mining...", "Anyone here?", "Lag?", "Nice server", "AFK", "BRB"];
-            bot._chatInterval = setInterval(() => {
-                if (!activeBots.has(sessionId)) return clearInterval(bot._chatInterval);
-                const msg = messages[Math.floor(Math.random() * messages.length)];
+            const messages = [
+                // Casual / chill vibes
+                "just vibing", "this is so peaceful", "love exploring alone", "nice day to mine",
+                "i could play this all day", "this server is pretty chill", "just me and the blocks",
+                "solo grinding rn", "peaceful mode activated lol", "nothing like some solo mining",
+                // Reactions to surroundings
+                "woah nice build", "who built that", "this area looks cool", "found a nice cave",
+                "so many diamonds down here", "the view from up here is insane", "found a village lol",
+                "this biome is beautiful", "i love dark oak forests", "mesa biome is underrated",
+                // Mining / building talk
+                "need more iron", "almost got full diamond", "building a small base",
+                "making a farm brb", "enchanting table time", "need to find some lapis",
+                "strip mining is the way", "branch mining > strip mining", "gotta get that fortune 3",
+                "need more wood", "smelting some stuff", "organizing my chest",
+                // Casual chat
+                "gg", "lol", "nice", "brb eating", "back", "ok",
+                "haha", "anyone know where the end portal is", "nether is scary ngl",
+                "just died to a creeper smh", "hate phantoms so much",
+                "enderman stole my block again", "skeletons are so annoying",
+                // Loner personality
+                "i prefer solo honestly", "playing alone hits different",
+                "dont mind me just exploring", "im just passing through",
+                "dont need a team for this", "solo survival is the real challenge",
+                "i like building alone tbh", "just here to relax",
+                // Random thoughts
+                "what should i build next", "thinking about making a treehouse",
+                "underwater base would be sick", "i wonder how deep this cave goes",
+                "gonna try to find a stronghold", "need to beat the dragon sometime",
+                "maybe ill build a bridge here", "i should make a nether highway",
+                "anyone got spare food lol", "running low on torches"
+            ];
+            let lastMsg = "";
+            const sendChat = () => {
+                if (!activeBots.has(sessionId)) return;
+                let msg;
+                do { msg = messages[Math.floor(Math.random() * messages.length)]; } while (msg === lastMsg);
+                lastMsg = msg;
                 bot.chat(msg);
-            }, 15000); // reduced to 15s
+                // Random delay between 30-90 seconds for natural feel
+                const nextDelay = 30000 + Math.floor(Math.random() * 60000);
+                bot._chatTimeout = setTimeout(sendChat, nextDelay);
+            };
+            bot._chatTimeout = setTimeout(sendChat, 15000 + Math.floor(Math.random() * 20000));
         }
 
         if (botData.config?.randomMovement) {
